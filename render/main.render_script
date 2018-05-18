@@ -1,0 +1,83 @@
+local camera = require('libs.camera')
+local hashed = require('libs.hashed')
+
+function init(self)
+	self.time = 0
+	self.constants = render.constant_buffer()
+	camera.width = render.get_window_width()
+	camera.height = render.get_window_height()
+
+	self.background_pred = render.predicate({'background'})
+	self.particle_pred = render.predicate({'particle'})
+	self.model_pred = render.predicate({'model'})
+	self.gui_pred = render.predicate({'gui'})
+
+	self.clear_color = vmath.vector4(0, 0, 0, 0)
+	self.clear_color.x = sys.get_config('render.clear_color_red', 0)
+	self.clear_color.y = sys.get_config('render.clear_color_green', 0)
+	self.clear_color.z = sys.get_config('render.clear_color_blue', 0)
+	self.clear_color.w = sys.get_config('render.clear_color_alpha', 0)
+
+	self.identity_matrix = vmath.matrix4()
+end
+
+function update(self)
+	-- Update time
+	self.time = self.time + camera.dt
+	self.constants.time = vmath.vector4(self.time, 0, 0, 0)
+	camera.width = render.get_window_width()
+	camera.height = render.get_window_height()
+	self.constants.resolution = vmath.vector4(camera.width, camera.height, 0, 0)
+	-- Pan camera
+	local pan = vmath.rotate(vmath.quat_rotation_y(-camera.alpha), camera.pan)
+	
+	-- Create an orbit camera.
+	local camera_boom = vmath.vector3(0, 0, camera.distance)
+	local camera_rotation = vmath.quat_rotation_y(-camera.alpha - camera.alpha_offset) * vmath.quat_rotation_x(camera.beta + camera.beta_offset)
+	local camera_position = camera.target + vmath.rotate(camera_rotation, camera_boom) + pan
+	local camera_up = vmath.rotate(camera_rotation, vmath.vector3(0,1,0))
+	local view_mtx = vmath.matrix4_look_at(camera_position, camera.target + pan, camera_up)
+	local width = render.get_window_width()
+	local height = render.get_window_height()
+	local scale = camera.zoom * 1280 / width
+	width, height = width * scale, height * scale
+
+	local projection_mtx = vmath.matrix4_orthographic(-width, width, -height, height, 1, 1000)
+	camera.view = view_mtx
+	camera.projection = projection_mtx
+	
+	render.clear({[render.BUFFER_COLOR_BIT] = self.clear_color, [render.BUFFER_DEPTH_BIT] = 1, [render.BUFFER_STENCIL_BIT] = 0})
+	render.set_viewport(0, 0, render.get_window_width(), render.get_window_height())
+
+	render.enable_state(render.STATE_BLEND)
+	render.set_blend_func(render.BLEND_SRC_ALPHA, render.BLEND_ONE_MINUS_SRC_ALPHA)
+
+	-- Render 2D space.
+	render.set_view(self.identity_matrix)
+	render.set_projection(vmath.matrix4_orthographic(0, render.get_window_width(), 0, render.get_window_height(), -1, 1))
+	render.draw(self.background_pred, self.constants)
+	render.draw(self.particle_pred, self.constants)
+	
+	render.set_view(view_mtx)
+	render.set_projection(projection_mtx)
+	
+	-- Render 3D space.
+	render.set_blend_func(render.BLEND_SRC_ALPHA, render.BLEND_ONE_MINUS_SRC_ALPHA)
+	render.enable_state(render.STATE_DEPTH_TEST)
+	render.enable_state(render.STATE_CULL_FACE)
+	render.draw(self.model_pred, self.constants)
+	render.disable_state(render.STATE_CULL_FACE)
+	render.disable_state(render.STATE_DEPTH_TEST)
+
+	-- Render GUI and overlays.
+	render.set_view(vmath.matrix4())
+	render.set_projection(vmath.matrix4_orthographic(0, render.get_window_width(), 0, render.get_window_height(), -1, 1))
+	
+	render.draw(self.gui_pred)
+end
+
+function on_message(self, message_id, message)
+	if message_id == hashed.clear_color then
+		self.clear_color = message.color
+	end
+end

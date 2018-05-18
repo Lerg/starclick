@@ -1,0 +1,33 @@
+uniform lowp mat4 view_proj;
+uniform lowp vec4 resolution;
+uniform lowp vec4 time;
+uniform lowp vec4 params;
+
+attribute lowp vec4 position;
+attribute lowp vec2 texcoord0;
+
+varying lowp vec2 var_texcoord0;
+varying lowp float index;
+varying lowp vec3 color;
+
+lowp float rand(float i) {
+	return fract(sin(dot(vec2(i, i), vec2(32.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+	var_texcoord0 = texcoord0;
+	index = params.x; // Particle index.
+	color = vec3(params.y, params.z, params.a);
+	lowp float size = 0.03 + 0.03 * rand(0.036 * index);
+	lowp float aspect = resolution.x / resolution.y; // Screen aspect ration.
+	lowp vec2 pan = vec2(-0.07 * time.x, -0.05 * time.x) * // Pan particle with constant speed.
+		(0.5 + rand(index) / 2.0); // Parallax effect.
+	
+	lowp vec2 p = resolution.y * // Sretch to actual screen size resolution.
+		(size * vec2(position.x, position.y) + // Particle size * initial vertex position.
+		mod( // Limit position to screen size.
+			vec2(rand(10.0 * index) * aspect, rand(0.05 * index)) + pan,
+			vec2(aspect + 0.05, 1.05)) - vec2(0.025, 0.025) // Screen size 0..aspect,0..1 plus some bleed area for smooth transition.
+		);
+	gl_Position = view_proj * vec4(p, 0, 1.0);
+}

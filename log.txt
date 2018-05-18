@@ -1,0 +1,6 @@
+INFO:DLIB: Writing log to: ./log.txt
+INFO:ENGINE: Loading data from: http://127.0.0.1:50072/build
+INFO:ENGINE: Initialised sound device 'default'
+
+INFO:DLIB: Flushing http cache to disk
+INFO:DLIB: SSDP: Done on address 192.168.0.197

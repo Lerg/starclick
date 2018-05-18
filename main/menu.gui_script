@@ -1,0 +1,39 @@
+local hashed = require('libs.hashed')
+
+function init(self)
+	msg.post('.', 'acquire_input_focus')
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hashed.set_win or message_id == hashed.set_lose then
+		msg.post('.', 'enable')
+		self.is_restart = true
+		
+		if message_id == hashed.set_win then
+			if message.is_over then
+				gui.set_text(gui.get_node('title_text'), 'YOU HAVE WON\nTHE GAME!')
+				gui.set_enabled(gui.get_node('play_button'), false)
+			else
+				gui.set_text(gui.get_node('title_text'), 'ALIENS ARE\nDEFEATED!')
+				gui.set_text(gui.get_node('play_button_text'), 'NEXT LEVEL')
+			end
+		else
+			gui.set_text(gui.get_node('title_text'), 'YOU WERE\nDESTROYED.')
+			gui.set_text(gui.get_node('play_button_text'), 'RESTART')
+		end
+	end
+end
+
+function on_input(self, action_id, action)
+	if action_id == hashed.mouse_click and action.released == true then
+		local play_button = gui.get_node('play_button')
+		if gui.pick_node(play_button, action.x, action.y) then
+			msg.post('/audio#click', 'play_sound')
+			msg.post('.', 'disable')
+			msg.post('/game#script', 'enable_input')
+			if self.is_restart then
+				msg.post('/game#script', 'restart')
+			end
+		end
+	end
+end

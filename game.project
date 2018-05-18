@@ -1,0 +1,81 @@
+[project]
+title = StarClick
+version = 0.1
+dependencies = https://github.com/britzl/defold-timer/archive/master.zip,https://github.com/subsoap/defos/archive/master.zip
+write_log = 1
+
+[bootstrap]
+main_collection = /main/main.collectionc
+render = /render/main.renderc
+
+[input]
+game_binding = /input/game.input_bindingc
+use_accelerometer = 0
+
+[display]
+width = 1280
+height = 720
+samples = 0
+variable_dt = 0
+high_dpi = 0
+
+[physics]
+scale = 0.02
+max_collisions = 0
+
+[script]
+shared_state = 1
+
+[factory]
+max_count = 64
+
+[collectionfactory]
+max_count = 0
+
+[model]
+max_count = 1024
+
+[rig]
+max_instance_count = 1024
+
+[android]
+package = com.spiralcodestudio.test1
+manifest = /AndroidManifest.xml
+
+[ios]
+bundle_identifier = com.spiralcodestudio.test1
+
+[collection_proxy]
+max_count = 1
+
+[particle_fx]
+max_count = 1
+max_particle_count = 2048
+
+[label]
+max_count = 32
+
+[gui]
+max_particle_count = 0
+max_particlefx_count = 0
+
+[spine]
+max_count = 0
+
+[sprite]
+max_count = 0
+
+[sound]
+max_sound_instances = 32
+max_sound_buffers = 16
+max_sound_data = 32
+max_sound_sources = 8
+
+[graphics]
+max_characters = 1024
+max_debug_vertices = 0
+max_draw_calls = 256
+
+[native_extension]
+app_manifest = /game.appmanifest
+

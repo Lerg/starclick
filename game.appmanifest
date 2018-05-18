@@ -1,0 +1,48 @@
+platforms:
+    x86-win32:
+        context:
+            excludeLibs: ["libengine", "libBulletDynamics", "libBulletCollision", "libLinearMath", "libBox2D", "libphysics", "libprofilerext", "librecord", "libvpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["libengine_release.lib", "libphysics_null.lib", "librecord_null.lib"]
+
+    x86_64-win32:
+        context:
+            excludeLibs: ["libengine", "libBulletDynamics", "libBulletCollision", "libLinearMath", "libBox2D", "libphysics", "libprofilerext", "librecord", "libvpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["libengine_release.lib", "libphysics_null.lib", "librecord_null.lib"]
+
+    x86_64-osx:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]
+
+    x86_64-linux:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]
+
+    js-web:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]
+
+    armv7-android:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]
+
+    armv7-ios:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]
+
+    arm64-ios:
+        context:
+            excludeLibs: ["engine", "BulletDynamics", "BulletCollision", "LinearMath", "Box2D", "physics", "profilerext", "record", "vpx"]
+            excludeSymbols: ["ProfilerExt", "FacebookExt"]
+            libs: ["engine_release", "physics_null", "record_null"]

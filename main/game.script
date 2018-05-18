@@ -1,0 +1,620 @@
+local camera = require('libs.camera')
+local input = require('libs.input')
+
+local g = require('libs.gopower')
+	{messages = true}
+--BUG: require()() doesn't work
+local hashed = require('libs.hashed')
+
+local utils = require('libs.utils')
+
+local jumper_grid = require('libs.jumper.grid')
+local jumper_pathfinder = require('libs.jumper.pathfinder')
+
+local data = require('main.data')
+require('main.game_inputs')
+require('main.game_ai')
+
+local spacing = 8
+local plate_height = spacing / 8
+local bullet_size = spacing / 8
+
+function g:init()
+	self.map_width, self.map_height = 10, 10
+	self.level_id = 1
+	self.level_count = 10
+	self.is_gameover = false
+	self.current_time = 0
+	self.is_paused = true
+	local v = 'vars'
+	local vars = require(v)
+	vars.game = self
+	msg.post('/ui', hashed.init)
+	self:create_starfield()
+end
+
+function g:create_starfield()
+	for i = 1, 100 do
+		local particle = factory.create('/background#particle_factory')
+		local r, g, b = 0.2 + math.random() / 5.0, 0.5 + math.random() / 4.0, 0.75 + math.random() / 4.0
+		if math.random() < 0.1 then
+			r, g = 3 * b, 3 * r
+		elseif math.random() < 0.125 then
+			r, g = g, r
+		end
+		model.set_constant(msg.url(nil, particle, 'model'), 'params', vmath.vector4(i, r, g, b))
+	end
+end
+
+function g:update(dt)
+	self.current_time = self.current_time + dt
+	if self.is_camera_shaking then
+		camera.alpha_offset = math.random() / self.shaking_amount
+		camera.beta_offset = math.random() / self.shaking_amount
+		self.shaking_amount = self.shaking_amount * 1.1
+	end
+	if not self.is_paused then
+		self:update_selection_rects()
+		self:update_healthbars()
+		self:update_ai()
+		self:update_attacks()
+	end
+end
+
+function g:check_gameover()
+	if not self.is_gameover then
+		local is_hive_remaining, is_human_remaining = false, false
+		for i = 1, #self.buildings do
+			local b = self.buildings[i]
+			if b.is_alien then
+				is_hive_remaining = true
+			end
+			if not b.is_alien then
+				is_human_remaining = true
+			end
+			if is_hive_remaining and is_human_remaining then
+				break
+			end
+		end
+		if not is_hive_remaining then
+			self:gameover{is_win = true}
+		elseif not is_human_remaining then
+			self:gameover{is_win = false}
+		end
+	end
+end
+
+function g:camera_shake()
+	self.is_camera_shaking = true
+	self.camera_alpha = camera.alpha
+	self.camera_beta = camera.beta
+	self.shaking_amount = 10
+	if self.timer_id then
+		timer.cancel(self.timer_id)
+	end
+	self.timer_id = timer.seconds(1.5, function()
+		self.is_camera_shaking = false
+		camera.alpha_offset = 0
+		camera.beta_offset = 0
+	end)
+end
+
+function g:play_crash_sound()
+	msg.post('/sounds#crash' .. tostring(math.random(1, 3)), 'play_sound')	
+end
+
+function g:gameover(params)
+	self.is_gameover = true
+	input.remove_mouse_click_listener(self)
+	input.remove_mouse_wheel_listener(self)
+	msg.post('/ui', 'disable')
+	self.is_paused = true
+	if params.is_win then
+		self.level_id = self.level_id + 1
+		msg.post('/menu', 'set_win', {is_over = self.level_id > self.level_count})
+	else
+		msg.post('/menu', 'set_lose')
+	end
+end
+
+function g.messages:enable_input()
+	input.add_mouse_move_listener(self)
+	input.add_mouse_click_listener(self)
+	input.add_mouse_wheel_listener(self)
+	self.is_paused = false
+	msg.post('/ui', 'enable')
+end
+
+function g.messages:restart()
+	self.is_gameover = false
+	for i = 1, #self.tiles do
+		go.delete(self.tiles[i])
+	end
+	for i = 1, #self.buildings do
+		go.delete(self.buildings[i].go)
+	end
+	for i = 1, #self.units do
+		go.delete(self.units[i].go)
+	end
+	for i = 1, #self.healthbars do
+		go.delete(self.healthbars[i].go)
+		self.healthbars.object = nil
+	end
+	if self.building_cursor then
+		go.delete(self.building_cursor)
+		self.building_cursor = nil
+	end
+	for x = 1, self.map_width do
+		for z = 1, self.map_height do
+			local index = x + (z - 1) * self.map_width 
+			if self.plates[index] then
+				go.delete(self.plates[index].go)
+			end
+		end
+	end
+	self.last_selected_base = nil
+	msg.post('.', 'create_tiles')
+end
+
+function g.messages:create_tiles()
+	self.tiles = {}
+	self.buildings = {}
+	self.units = {}
+	self.map = {}
+	self.healthbars = {}
+	self.plates = {}
+	self.player = {}
+	
+	local light_position = go.get_position('/light')
+	local light = vmath.vector4(light_position.x, light_position.y, light_position.z, 0)
+	
+	local ground_factories = {'/ground_tiles#ground1_factory', '/ground_tiles#ground2_factory', '/ground_tiles#ground3_factory'}
+	local level = require('levels.' .. self.level_id)
+	self.player.resources = level.resources
+	self.ground = utils.copy(level.ground)
+	self.map_width, self.map_height = level.width, level.height
+	local map_width, map_height = self.map_width, self.map_height
+	for z = 1, map_height do
+		for x = 1, map_width do
+			local index = x + (z - 1) * map_width
+			local value = level.ground[index]
+			if value ~= 0 then
+				local tile = factory.create(ground_factories[value], vmath.vector3((x - map_width / 2 - 0.5) * spacing, 0, (z - map_height / 2 - 0.5) * spacing))
+				go.set_rotation(vmath.quat_rotation_y(math.random(1, 4) * math.pi / 2 ), tile)
+				model.set_constant(msg.url(nil, tile, 'model'), 'light', light)
+				table.insert(self.tiles, tile)
+				table.insert(self.map, {x = x, z = z, is_ground = true, go = tile})
+			end
+		end
+	end
+
+	for i = 1, #level.buildings do
+		local b = level.buildings[i]
+		local object = {name = b.name, x = b.x, z = b.z, is_building = true}
+		utils.deep_copy(data.buildings[b.name], object)
+		object.max_health = object.health
+
+		local building = factory.create('/buildings#' .. b.name .. '_factory', vmath.vector3((b.x - map_width / 2 - 0.5) * spacing, spacing / 2 + (object.is_alien and 0 or plate_height), (b.z - map_height / 2 - 0.5) * spacing))
+		model.set_constant(msg.url(nil, building, 'model'), 'light', light)
+		object.go = building
+		object.last_action_time = self.current_time + math.random()
+		table.insert(self.buildings, object)
+
+		if not object.is_alien then
+			local plate = factory.create('/plate#factory', vmath.vector3((b.x - map_width / 2 - 0.5) * spacing, spacing / 2, (b.z - map_height / 2 - 0.5) * spacing))
+			model.set_constant(msg.url(nil, plate, 'model'), 'light', light)
+			self.plates[b.x + (b.z - 1) * map_width] = {go = plate, x = b.x, z = b.z, is_occupied = true}
+		end
+	end
+
+	for i = 1, #level.units do
+		self:spawn_unit(level.units[i])
+	end
+
+	self:create_selection_rects()
+	msg.post('/ui', hashed.level)
+end
+
+function g.messages:spawn_unit(u)
+	self:spawn_unit(u)
+end
+
+function g:update_selection_rects()
+	if self.selection_rects then
+		local map_width, map_height = self.map_width, self.map_height
+		local cursor = self.selection_rects.cursor
+		local selected = self.selection_rects.selected
+		if selected.object then
+			if selected.object.health == 0 then
+				selected.object = nil
+				selected.is_visible = false
+				msg.post('/ui', hashed.selection)
+			else
+				selected.x, selected.z = selected.object.x, selected.object.z
+			end
+		end
+		
+		-- 1st: 0 - cursor, 1 - selected
+		-- 2nd: 0 - invisible, 1 - visible
+		local params = vmath.vector4(0, cursor.is_visible and 1 or 0, 0, 0)
+		model.set_constant(msg.url(nil, cursor.go, 'model'), 'params', params)
+		params = vmath.vector4(1, selected.is_visible and 1 or 0, 0, 0)
+		model.set_constant(msg.url(nil, selected.go, 'model'), 'params', params)
+
+		for i, r in pairs({cursor, selected}) do
+			if r.is_visible then
+				local y_off = 0
+				if self.plates[r.x + (r.z - 1) * map_width] then
+					y_off = plate_height
+				end
+				go.set_position(vmath.vector3((r.x - map_width / 2 - 0.5) * spacing, spacing / 2 + y_off + 0.01 + (i == 2 and 0.01 or 0), (r.z - map_height / 2 - 0.5) * spacing), msg.url(nil, r.go, '.'))
+			end
+		end
+		if self.player.building then
+			if cursor.is_visible then
+				if not self.building_cursor then
+					if self.player.building == 'plate' then
+						self.building_cursor = factory.create('/plate#factory', go.get_position(cursor.go))
+					else
+						self.building_cursor = factory.create('/buildings#' .. self.player.building .. '_factory', go.get_position(cursor.go))
+					end
+					self:apply_model_light(self.building_cursor)
+				else
+					go.set_position(go.get_position(cursor.go), self.building_cursor)
+				end
+			else
+				if self.building_cursor then
+					go.delete(self.building_cursor)
+					self.building_cursor = nil
+				end
+			end
+		elseif self.building_cursor then
+			go.delete(self.building_cursor)
+			self.building_cursor = nil
+		end
+	end
+end
+
+function g:create_selection_rects()
+	if not self.selection_rects then
+		local factory_name = '/selection_rect#factory'
+		local position_cursor = vmath.vector3(0, 0, 0)
+		local position_selected = vmath.vector3(0, 0, 0)
+		local rotation = vmath.quat_rotation_x(-math.pi / 2)
+		local scale = vmath.vector3(spacing / 2, spacing / 2, 1)
+		self.selection_rects = {
+			cursor = {
+				go = factory.create(factory_name, position_cursor, rotation, {}, scale),
+				is_visible = false,
+				x = 0, z = 0
+			},
+			selected = {
+				go = factory.create(factory_name, position_selected, rotation, {}, scale),
+				is_visible = false,
+				x = 0, z = 0
+			}
+		}
+	end
+	self.selection_rects.cursor.is_visible = false
+	local base = self:find_base()
+	if base then
+		self.selection_rects.selected.x, self.selection_rects.selected.z = base.x, base.z
+		self.selection_rects.selected.is_visible = true
+		self.selection_rects.selected.object = base
+		self.last_selected_base = base
+		msg.post('/ui', hashed.selection)
+	end
+	self:update_selection_rects()
+end
+
+function g:find_base()
+	if self.last_selected_base and self.last_selected_base.health > 0 then
+		return self.last_selected_base
+	else
+		for i = 1, #self.buildings do
+			local b = self.buildings[i]
+			if b.name == 'base' then
+				self.last_selected_base = b
+				return b
+			end
+		end
+	end
+end
+
+function g:map_xz_to_world(x, z)
+	return (x - self.map_width / 2 - 0.5) * spacing, (z - self.map_height / 2 - 0.5) * spacing
+end
+
+function g:map_xz_to_world_vector(x, z)
+	return vmath.vector3((x - self.map_width / 2 - 0.5) * spacing, spacing / 2 + (self.plates[x + (z - 1) * self.map_width] and plate_height or 0), (z - self.map_height / 2 - 0.5) * spacing)
+end
+
+function g:move_unit(unit, to_x, to_z)
+	if unit.x == to_x and unit.z == to_z then
+		unit.is_moving = false
+		return
+	end
+	local is_target = false -- Move to a target instead of ground.
+	local map = {}
+	for z = 1, self.map_height do
+		local line = {}
+		for x = 1, self.map_width do
+			local walkable = true
+			if self.ground[x + (z - 1) * self.map_width] == 0 then
+				walkable = false
+			else
+				for i = 1, #self.units do
+					local u = self.units[i]
+					if u.x == x and u.z == z then
+						if x == to_x and z == to_z and u.is_alien == not unit.is_alien then
+							is_target = true
+						else
+							walkable = false
+						end
+						break
+					end
+				end
+				if walkable then
+					for i = 1, #self.buildings do
+						local b = self.buildings[i]
+						if b.x == x and b.z == z then
+							if x == to_x and z == to_z and b.is_alien == not unit.is_alien then
+								is_target = true
+							else
+								walkable = false
+							end
+							break
+						end
+					end
+				end
+			end
+			table.insert(line, walkable and 0 or 1)
+		end
+		table.insert(map, line)
+	end
+	local grid = jumper_grid(map)
+	grid.is_target = is_target
+	grid.target_x, grid.target_y = to_x, to_z
+	local pathfinder = jumper_pathfinder(grid, 'ASTAR', 0)
+
+	local path = pathfinder:getPath(unit.x, unit.z, to_x, to_z)
+	if path then
+		local node
+		for n, count in path:nodes() do
+			if count == 2 then
+				node = n
+				break
+			end
+		end
+		local x, z = node:getX(), node:getY()
+		if is_target and x == to_x and z == to_z then
+			unit.is_moving = false
+			return
+		end
+		
+		local position = go.get_position(unit.go)
+		position.x, position.z = self:map_xz_to_world(x, z)
+		local duration = vmath.length(vmath.vector3(unit.x - x, 0, unit.z - z)) / unit.speed
+		local angle = 0
+		if unit.x < x then
+			angle = math.pi / 2
+		elseif unit.x > x then
+			angle = -math.pi / 2
+		elseif unit.z < z then
+			angle = 0
+		elseif unit.z > z then
+			angle = math.pi
+		end
+		if math.abs(unit.angle - angle) > math.pi then
+			if unit.angle > 0 then
+				unit.angle = unit.angle + 2 * math.pi
+			else
+				unit.angle = unit.angle - 2 * math.pi
+			end
+			go.set_rotation(vmath.quat_rotation_y(unit.angle), unit.go)
+		end
+		unit.x, unit.z = x, z
+		unit.angle = angle
+		unit.is_moving = true
+		go.animate(unit.go, 'position', go.PLAYBACK_ONCE_FORWARD, self:map_xz_to_world_vector(x, z), go.EASING_LINEAR, duration, 0, function()
+			self:move_unit(unit, to_x, to_z)
+		end)
+		go.animate(unit.go, 'rotation', go.PLAYBACK_ONCE_FORWARD, vmath.quat_rotation_y(angle), go.EASING_LINEAR, duration / 2)
+		return true
+	else
+		unit.is_moving = false
+	end
+end
+
+function g:attach_healthbar(object, index)
+	local hb = self.healthbars[index]
+	local rotation = vmath.quat_rotation_y(-camera.alpha)
+	local position = go.get_position(object.go)
+	position = position + vmath.vector3(0, object.is_tall and 2 * spacing or spacing, 0)
+	if not hb then
+		hb = {
+			go = factory.create('/healthbar#factory', position, rotation, {}, vmath.vector3(spacing / 4, spacing / 16, 1))
+		}
+		table.insert(self.healthbars, hb)
+	elseif not hb.object then
+		msg.post(msg.url(nil, hb.go, 'model'), 'enable')
+	end
+	model.set_constant(msg.url(nil, hb.go, 'model'), 'params', vmath.vector4(object.health / object.max_health, 0, 0, 0))
+	go.set_position(position, hb.go)
+	go.set_rotation(rotation, hb.go)
+	hb.object = object
+end
+
+function g:update_healthbars()
+	local j = 1
+	for i = 1, #self.units do
+		local u = self.units[i]
+		if u.health > 0 and u.health < u.max_health then
+			self:attach_healthbar(u, j)
+			j = j + 1
+		end
+	end
+	for i = 1, #self.buildings do
+		local b = self.buildings[i]
+		if b.health > 0 and b.health < b.max_health then
+			self:attach_healthbar(b, j)
+			j = j + 1
+		end
+	end
+	
+	for i = j, #self.healthbars do
+		self.healthbars[i].object = nil
+		msg.post(msg.url(nil, self.healthbars[i].go, 'model'), 'disable')
+	end
+end
+
+function g:update_attacks()
+	for i = #self.units, 1, -1 do
+		local u = self.units[i]
+		if u.health == 0 then
+			go.delete(u.go)
+			table.remove(self.units, i)
+		elseif u.target then
+			if u.target.health == 0 then
+				u.target = nil
+			elseif self.current_time >= u.last_attack_time + u.cooldown then
+				if u.is_alien then
+					msg.post('/audio#alien_attack', 'play_sound')
+				else
+					msg.post('/audio#human_attack', 'play_sound')
+				end
+				local bullet = factory.create('/bullet#factory', go.get_position(u.go) + vmath.vector3(0, spacing / 2, 0), vmath.quat_rotation_y(-camera.alpha), {}, vmath.vector3(bullet_size, bullet_size, 1))
+				go.animate(bullet, 'position', go.PLAYBACK_ONCE_FORWARD, go.get_position(u.target.go), go.EASING_LINEAR, 0.1, 0, function()
+					go.delete(bullet)
+				end)
+				
+				u.last_attack_time = self.current_time
+				u.target.health = u.target.health - u.attack
+				if self.selection_rects.selected.object == u.target then
+					msg.post('/ui', hashed.update_health)
+				end
+				if u.target.health <= 0 then
+					if u.target.is_alien then
+						msg.post('/audio#alien_death', 'play_sound')
+					else
+						msg.post('/audio#human_death', 'play_sound')
+					end
+					if u.target.is_building then
+						self:camera_shake()
+						if not u.target.is_alien then
+							self.plates[u.target.x + (u.target.z - 1) * self.map_width].is_occupied = false
+						end
+					end
+					u.target.health = 0
+					u.target = nil
+				end
+			end
+		end
+	end
+	for i = #self.buildings, 1, -1 do
+		local b = self.buildings[i]
+		if b.health == 0 then
+			go.delete(b.go)
+			table.remove(self.buildings, i)
+			self:check_gameover()
+		end
+	end
+end
+
+function g:apply_model_light(game_object)
+	local light_position = go.get_position('/light')
+	model.set_constant(msg.url(nil, game_object, 'model'), 'light', vmath.vector4(light_position.x, light_position.y, light_position.z, 0))
+end
+
+function g:spawn_unit(u)
+	local unit = factory.create('/units#' .. u.name .. '_factory', self:map_xz_to_world_vector(u.x, u.z))
+	self:apply_model_light(unit)
+	local object = {name = u.name, x = u.x, z = u.z, go = unit, is_unit = true}
+	utils.deep_copy(data.units[u.name], object)
+	object.max_health = object.health
+	object.angle = 0
+	object.last_attack_time = 0
+	table.insert(self.units, object)
+end
+
+function g:spawn_building(x, z)
+	local name = self.player.building
+	local index = x + (z - 1) * self.map_width
+	if name == 'plate' then
+		local is_adjacent = false
+		local dxdz = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}}
+		for i = 1, #dxdz do
+			local dx, dz = unpack(dxdz[i])
+			if self.plates[utils.clamp(x + dx, 0, self.map_width) + (utils.clamp(z + dz, 0, self.map_height) - 1) * self.map_width] then
+				is_adjacent = true
+				break
+			end
+		end
+		if not is_adjacent then
+			msg.post('/ui', hashed.info, {info = 'The plate has to be placed next to another plate or building.'})
+			msg.post('/audio#error', 'play_sound')
+		elseif not self.plates[index] then
+			local plate = factory.create('/plate#factory', vmath.vector3((x - self.map_width / 2 - 0.5) * spacing, spacing / 2, (z - self.map_height / 2 - 0.5) * spacing))
+			self:apply_model_light(plate)
+			self.plates[index] = {go = plate, x = x, z = z}
+			self.player.building = nil
+			msg.post('/audio#place', 'play_sound')
+			return true
+		end
+	else
+		if self.plates[index] and not self.plates[index].is_occupied then
+			local object = {name = name, x = x, z = z, is_building = true}
+			utils.deep_copy(data.buildings[name], object)
+			object.max_health = object.health
+
+			local building = factory.create('/buildings#' .. name .. '_factory', vmath.vector3((x - self.map_width / 2 - 0.5) * spacing, spacing / 2 + plate_height, (z - self.map_height / 2 - 0.5) * spacing))
+			self:apply_model_light(building)
+			object.go = building
+			object.last_action_time = 0
+			table.insert(self.buildings, object)
+			self.player.building = nil
+			self.plates[index].is_occupied = true
+			return true
+		end
+	end
+end
+
+function g:click_resources()
+	local amount = 1
+	for i = 1, #self.buildings do
+		local b = self.buildings[i]
+		if b.resources_multiplier then
+			amount = amount * b.resources_multiplier
+		end
+	end
+	self.player.resources = self.player.resources + amount
+	msg.post('/ui', hashed.resources)
+end
+
+function g:check_free_plate()
+	for x = 1, self.map_width do
+		for z = 1, self.map_height do
+			local p = self.plates[x + (z - 1) * self.map_width]
+			if p and not p.is_occupied then
+				return true
+			end
+		end
+	end
+end
+
+function g:final()
+	if self.timer_id then
+		timer.cancel(self.timer_id)
+	end
+	input.remove_mouse_move_listener(self)
+	input.remove_mouse_click_listener(self)
+	input.remove_mouse_wheel_listener(self)
+end
+
+for k, v in pairs(require('main.game_inputs')) do
+	g[k] = v
+end
+
+for k, v in pairs(require('main.game_ai')) do
+	g[k] = v
+end

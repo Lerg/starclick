@@ -1,0 +1,179 @@
+local hashed = require('libs.hashed')
+local focus = require('libs.focus')
+local utils = require('libs.utils')
+local data = require('main.data')
+
+function window_callback(self, event, data)
+	if event == window.WINDOW_EVENT_RESIZED then
+		gui.set_position(self.group, vmath.vector3(0, data.height / 2 - 360, 0))
+		gui.set_position(self.info, vmath.vector3(data.width / 2, 48, 0))
+	end
+end
+
+function init(self)
+	self.group = gui.get_node('group')
+	self.info = gui.get_node('info')
+	self.selection_box = gui.get_node('selection_box')
+	self.selection_name = gui.get_node('selection_name')
+	self.click_button = gui.get_node('click_button')
+	self.production_box = gui.get_node('production_box')
+	self.health_value = gui.get_node('health_value')
+	self.attack_label = gui.get_node('attack_label')
+	self.attack_value = gui.get_node('attack_value')
+	self.resources = gui.get_node('resources')
+	self.production_cancel_button = gui.get_node('production_cancel_button')
+	self.level = gui.get_node('level')
+	self.production_items = {}
+	for i = 1, 5 do
+		table.insert(self.production_items, {
+			box = gui.get_node('production_item' .. i),
+			name = gui.get_node('production_item' .. i .. '_name'),
+			price = gui.get_node('production_item' .. i .. '_price')
+		})
+	end
+	gui.set_enabled(self.selection_box, false)
+	gui.set_enabled(self.production_cancel_button, false)
+	window.set_listener(window_callback)
+end
+
+function update(self)
+	if self.update_resources then
+		gui.set_text(self.resources, self.game.player.resources)
+		self.update_resources = false
+	end
+end
+
+local function set_info(self, message)
+	gui.set_text(self.info, message and message:upper() or '')
+	gui.set_color(self.info, vmath.vector4(1, 1, 1, 1))
+	gui.animate(self.info, 'color', vmath.vector4(1, 1, 1, 0), gui.EASING_LINEAR, 5)
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hashed.selection then
+		local object = self.game.selection_rects.selected.object
+		gui.set_enabled(self.selection_box, object and true or false)
+		if object then
+			gui.set_text(self.selection_name, object.name:upper():gsub('_', ' '))
+			set_info(self, object.info)
+			gui.set_text(self.health_value, object.health)
+			if object.attack then
+				gui.set_enabled(self.attack_label, true)
+				gui.set_enabled(self.attack_value, true)
+				gui.set_text(self.attack_value, object.attack)
+			else
+				gui.set_enabled(self.attack_label, false)
+				gui.set_enabled(self.attack_value, false)
+			end
+			gui.set_enabled(self.click_button, object.click and true or false)
+			gui.set_enabled(self.production_box, object.production and true or false)
+			gui.set_enabled(self.production_cancel_button, false)
+			if object.production then
+				for i = 1, #object.production do
+					local p = object.production[i]
+					local p_item = self.production_items[i]
+					gui.set_enabled(p_item.box, true)
+					gui.set_text(p_item.name, utils.capitalize(p.name))
+					gui.set_text(p_item.price, p.price)
+				end
+				for i = #object.production + 1, #self.production_items do
+					gui.set_enabled(self.production_items[i].box, false)
+				end
+			end
+		end
+	elseif message_id == hashed.init then
+		local v = 'vars'
+		local vars = require(v)
+		self.game = vars.game
+		self.update_resources = true
+		msg.post('.', 'acquire_input_focus')
+	elseif message_id == hashed.info then
+		set_info(self, message.info)
+	elseif message_id == hashed.resources then
+		self.update_resources = true
+	elseif message_id == hashed.update_health then
+		local object = self.game.selection_rects.selected.object
+		if object then
+			gui.set_text(self.health_value, object.health)
+		end
+	elseif message_id == hashed.level then
+		gui.set_text(self.level, 'Level ' .. self.game.level_id .. ' / ' .. self.game.level_count)
+	end
+end
+
+function on_input(self, action_id, action)
+	if action_id == hashed.mouse_click then
+		if action.pressed then
+			focus.set_touch(self)
+			self.is_focused = true
+			if gui.is_enabled(self.selection_box) then
+				if gui.is_enabled(self.click_button) and gui.pick_node(self.click_button, action.x, action.y) then
+					msg.post('/audio#click', 'play_sound')
+					local click = self.game.selection_rects.selected.object.click
+					if click.name == 'resources' then
+						self.game:click_resources()
+						self.update_resources = true
+					end
+				elseif gui.is_enabled(self.production_cancel_button) and gui.pick_node(self.production_cancel_button, action.x, action.y) then
+					msg.post('/audio#click', 'play_sound')
+					gui.set_enabled(self.production_cancel_button, false)
+					self.game.player.building = nil
+				elseif gui.is_enabled(self.production_box) then
+					for i = 1, #self.production_items do
+						local p_item = self.production_items[i]
+						if gui.is_enabled(p_item.box) and gui.pick_node(p_item.box, action.x, action.y) then
+							local p = self.game.selection_rects.selected.object.production[i]
+							if p.price <= self.game.player.resources then
+								local is_building = data.buildings[p.name] and true or false
+								if is_building or p.name == 'plate' then
+									if not self.game.player.building then
+										if p.name == 'plate' or self.game:check_free_plate() then
+											self.game.player.resources = self.game.player.resources - p.price
+											if p.name == 'plate' then
+												p.price = math.floor(p.price * 1.5)
+											else
+												p.price = p.price * 2
+											end
+											gui.set_text(p_item.name, 'PLACE')
+											gui.set_text(p_item.price, p.price)
+											self.game.player.building = p.name
+											if p.name == 'plate' then
+												set_info(self, 'Place the plate adjacent to\nother plates or buildings.')
+											else
+												set_info(self, 'Place the building on a plate.')
+											end
+											gui.set_enabled(self.production_cancel_button, true)
+											msg.post('/audio#click', 'play_sound')
+										else
+											set_info(self, 'No free plates available. Build more plates.')
+											msg.post('/audio#error', 'play_sound')
+										end
+									else
+										set_info(self, 'You have to place the current building\nbefore you can buy another one.')
+										msg.post('/audio#error', 'play_sound')
+									end
+								else
+									local object = self.game.selection_rects.selected.object
+									local x, z = self.game:find_free_spot_around(object.x, object.z, object.is_alien)
+									if x then
+										self.game.player.resources = self.game.player.resources - p.price
+										p.price = p.price * 2
+										gui.set_text(p_item.price, p.price)
+										msg.post('/game#script', hashed.spawn_unit, {name = p.name, x = x, z = z})
+									else
+										set_info(self, 'No free space around the building.')
+										msg.post('/audio#error', 'play_sound')
+									end
+								end
+								self.update_resources = true
+							else
+								set_info(self, 'Not enough resources.')
+								msg.post('/audio#error', 'play_sound')
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
